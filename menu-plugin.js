@@ -1,191 +1,148 @@
 (function () {
     'use strict';
 
-    var PLUGIN_NAME = 'number-remote-navigation';
-
-    // 1..5: Фильмы, Сериалы, Избранное, Главная, Фильтр
-    var ROUTES = {
-        49: { // Digit1
-            actions: ['movie', 'movies', 'film', 'films'],
-            labels: ['фильмы', 'movies', 'movie', 'films']
-        },
-        50: { // Digit2
-            actions: ['tv', 'series', 'serial', 'serials', 'shows'],
-            labels: ['сериалы', 'series', 'tv shows', 'shows', 'serials']
-        },
-        51: { // Digit3
-            actions: ['bookmarks', 'favorite', 'favorites', 'favourites'],
-            labels: ['избранное', 'закладки', 'bookmarks', 'favorites', 'favourites']
-        },
-        52: { // Digit4
-            actions: ['main', 'home'],
-            labels: ['главная', 'main', 'home']
-        },
-        53: { // Digit5
-            actions: ['filter', 'catalog'],
-            labels: ['фильтр', 'filter', 'каталог', 'catalog']
-        },
-
-        // Numpad 1..5
-        97: null,
-        98: null,
-        99: null,
-        100: null,
-        101: null
-    };
-
-    ROUTES[97] = ROUTES[49];
-    ROUTES[98] = ROUTES[50];
-    ROUTES[99] = ROUTES[51];
-    ROUTES[100] = ROUTES[52];
-    ROUTES[101] = ROUTES[53];
-
-    var started = false;
-
-    function log() {
-        try {
-            console.log.apply(console, ['[' + PLUGIN_NAME + ']'].concat([].slice.call(arguments)));
-        } catch (e) {}
-    }
-
-    function normalize(text) {
-        return String(text || '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .toLowerCase();
-    }
-
-    function isBlockedContext() {
-        var ae = document.activeElement;
-
-        if (ae) {
-            var tag = (ae.tagName || '').toLowerCase();
-            if (tag === 'input' || tag === 'textarea' || ae.isContentEditable) return true;
-        }
-
-        if (document.body) {
-            if (document.body.classList.contains('settings--open')) return true;
-            if (document.body.classList.contains('selectbox--open')) return true;
-            if (document.body.classList.contains('search--open')) return true;
-        }
-
-        if (document.querySelector('.modal, .search-box, .player, .simple-keyboard, .keyboard')) return true;
-
-        return false;
-    }
-
-    function getMenuCandidates() {
-        return Array.from(document.querySelectorAll(
-            '.menu [data-action], .menu .menu__item, .menu .selector[data-action], [data-action].menu__item'
-        ));
-    }
-
-    function findMenuItem(route) {
-        var items = getMenuCandidates();
-
-        if (!items.length) return null;
-
-        var wantedActions = route.actions.map(normalize);
-        var wantedLabels = route.labels.map(normalize);
-
-        var byAction = items.find(function (item) {
-            var action = normalize(item.getAttribute('data-action'));
-            return wantedActions.indexOf(action) >= 0;
-        });
-
-        if (byAction) return byAction;
-
-        var byText = items.find(function (item) {
-            var textNode = item.querySelector('.menu__text') || item;
-            var text = normalize(textNode.textContent);
-
-            return wantedLabels.some(function (label) {
-                return text.indexOf(label) >= 0;
-            });
-        });
-
-        return byText || null;
-    }
-
-    function activateItem(item) {
-        if (!item) return false;
-
-        try {
-            // По возможности закрываем оверлеи и возвращаемся в контентный слой
-            if (window.Lampa && Lampa.Controller && typeof Lampa.Controller.toContent === 'function') {
-                Lampa.Controller.toContent();
-            }
-        } catch (e) {}
-
-        try {
-            if (window.Lampa && Lampa.Utils && typeof Lampa.Utils.trigger === 'function') {
-                Lampa.Utils.trigger(item, 'hover:enter');
-            } else if (typeof item.click === 'function') {
-                item.click();
-            } else {
-                item.dispatchEvent(new MouseEvent('click', {
-                    bubbles: true,
-                    cancelable: true
-                }));
-            }
-
-            return true;
-        } catch (e) {
-            log('activate error', e);
-            return false;
-        }
-    }
-
-    function openSectionByNumber(code) {
-        var route = ROUTES[code];
-        if (!route) return false;
-
-        var item = findMenuItem(route);
-        if (!item) {
-            log('section not found for code:', code, route);
-            return false;
-        }
-
-        return activateItem(item);
-    }
-
-    function onKeydown(payload) {
-        if (!payload || !payload.code) return;
-        if (isBlockedContext()) return;
-
-        var handled = openSectionByNumber(payload.code);
-
-        // Keypad сначала рассылает событие слушателям, а потом проверяет defaultPrevented,
-        // поэтому можно остановить дальнейшую стандартную обработку.
-        if (handled && payload.event) {
-            try {
-                payload.event.preventDefault();
-                payload.event.stopPropagation();
-            } catch (e) {}
-        }
-    }
-
-    function init() {
-        if (started) return;
-        started = true;
-
-        Lampa.Keypad.listener.follow('keydown', onKeydown);
-        log('initialized');
+    // Включаем TV‑режим (как делают другие hotkeys/аниме плагины)
+    if (Lampa && Lampa.Platform && typeof Lampa.Platform.tv === 'function') {
+        Lampa.Platform.tv();
     }
 
     function start() {
-        if (!window.Lampa || !Lampa.Listener || !Lampa.Keypad) {
-            return setTimeout(start, 300);
+        // Защита от повторной инициализации
+        if (window.lampa_numkeys_plugin) return;
+        window.lampa_numkeys_plugin = true;
+
+        // Основной обработчик нажатий цифр
+        function onKeyDown(e) {
+            // Если открыт selectbox (списки фильтров и т.п.) — не вмешиваемся
+            if (document.body.classList.contains('selectbox--open')) return;
+
+            // Если фокус в инпуте/текстовом поле — не перехватываем цифры
+            var active = document.activeElement;
+            if (active && (
+                active.tagName === 'INPUT' ||
+                active.tagName === 'TEXTAREA' ||
+                active.isContentEditable
+            )) {
+                return;
+            }
+
+            // Если самого меню нет (например, полноэкранный плеер) — выходим
+            if (!document.querySelector('.menu .menu__list')) return;
+
+            var code = e.keyCode || e.which;
+
+            // Маппинг keyCode → действия.
+            // Включены коды верхнего ряда клавиатуры, NumPad и типичные TV‑коды,
+            // по аналогии с существующим hotkeys.js.[web:6][web:12]
+
+            // 1 → Фильмы
+            if (code === 49 || code === 97 || code === 1) {
+                openSection({
+                    action: 'movie',
+                    titleKey: 'menu_movies'
+                });
+                return;
+            }
+
+            // 2 → Сериалы (TV)
+            if (code === 50 || code === 98 || code === 2) {
+                openSection({
+                    action: 'tv',
+                    titleKey: 'menu_tv'
+                });
+                return;
+            }
+
+            // 3 → Избранное
+            if (code === 51 || code === 99 || code === 3) {
+                openSection({
+                    action: 'favorite',
+                    titleKey: 'menu_favorite'
+                });
+                return;
+            }
+
+            // 4 → Главная
+            if (code === 52 || code === 100 || code === 4) {
+                openSection({
+                    action: 'main',
+                    titleKey: 'menu_main'
+                });
+                return;
+            }
+
+            // 5 → Фильтр
+            // По образцу других плагинов работаем с .simple-button--filter.[web:5]
+            if (code === 53 || code === 101 || code === 5 || code === 6) {
+                openFilter();
+                return;
+            }
         }
 
-        if (window.appready) {
-            init();
-        } else {
-            Lampa.Listener.follow('app', function (e) {
-                if (e && e.type === 'ready') init();
-            });
+        /**
+         * Открыть раздел через клик по пункту бокового меню.
+         * Сначала ищем по data-action, если не нашли — по локализованному тексту.
+         */
+        function openSection(opts) {
+            var action = opts.action;
+            var titleKey = opts.titleKey;
+
+            // Сперва пробуем по data-action
+            var $item = $('body').find('.menu [data-action="' + action + '"]').first();
+
+            if (!$item.length && Lampa && Lampa.Lang && typeof Lampa.Lang.translate === 'function') {
+                var expectedTitle = Lampa.Lang.translate(titleKey) || '';
+
+                // Фолбэк: ищем по тексту в .menu__text (учёт текущего языка)[web:5]
+                $('body').find('.menu .menu__item').each(function () {
+                    var $this = $(this);
+                    var text = ($this.find('.menu__text').text() || '').trim();
+                    if (text === expectedTitle) {
+                        $item = $this;
+                        return false; // break
+                    }
+                });
+            }
+
+            if (!$item.length) return;
+
+            // Фокусируем пункт в контроллере, если он селектор
+            try {
+                if ($item.hasClass('selector') && Lampa.Controller && Lampa.Controller.toggle) {
+                    Lampa.Controller.toggle($item[0]);
+                }
+            } catch (e) {
+                // молча игнорируем, если API изменился
+            }
+
+            // В Lampa всё “нажатие” обычно эмулируется через событие hover:enter.[web:5]
+            $item.trigger('hover:enter');
         }
+
+        /**
+         * Открыть фильтр для текущего списка (там, где кнопка фильтра доступна).
+         */
+        function openFilter() {
+            // В разных экранах фильтр может быть спрятан, проверяем видимость.[web:5]
+            var $btn = $('body').find('.simple-button--filter').filter(':visible').first();
+            if (!$btn.length) return;
+
+            // Для кнопок в интерфейсе Lampa также используется hover:enter.[page:1][web:5]
+            $btn.trigger('hover:enter');
+        }
+
+        // Вешаем единый keydown‑слушатель
+        document.addEventListener('keydown', onKeyDown);
     }
 
-    start();
+    // Стандартный жизненный цикл: запускаем после готовности приложения.[web:5]
+    if (window.appready) {
+        start();
+    } else if (Lampa && Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
+        Lampa.Listener.follow('app', function (event) {
+            if (event.type === 'ready') {
+                start();
+            }
+        });
+    }
 })();
